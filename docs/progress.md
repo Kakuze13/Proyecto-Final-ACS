@@ -16,7 +16,7 @@
 | 11 - Resiliencia y cierre | Completa | Timeouts, frames inválidos/grandes, límite de conexiones y cierre/reinicio comprobados. |
 | 12 - Integración y carga | Completa | Suite completa aprobada; escenarios con 5, 10, 20 y 50 clientes, mensajería simultánea, slow consumer y reinicio. |
 | 13 - Auditoría de IA y arquitectura | Completa | Revisadas responsabilidades, dependencias, locks, I/O, framing, colas, tareas, sockets y diagramas; hallazgos corregidos y probados. |
-| 14 - Entrega | Parcial | Código, README, documentación, pruebas y diagramas locales listos. Publicar en GitHub y autenticar requiere intervención externa del usuario. |
+| 14 - Entrega | Completa | Código, README, documentación, pruebas y diagramas publicados en `Kakuze13/Proyecto-Final-ACS`, rama `main`. |
 
-Las credenciales GitHub, firewall y pruebas entre equipos quedan pendientes de
-acciones externas del usuario; no son necesarias para escuchar en loopback.
+Firewall y pruebas entre equipos quedan pendientes de acciones externas; no
+son necesarios para ejecutar el proyecto en loopback.

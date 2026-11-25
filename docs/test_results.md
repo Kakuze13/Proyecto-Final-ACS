@@ -104,5 +104,7 @@ No se ejecutaron pruebas funcionales antes de iniciar la Fase 2.
   `python -m client.main --help` — ambos comandos disponibles.
 - Auditoría: framing y tamaño máximo, límites de solicitudes, operaciones SQLite,
   destinatarios, cierre de tareas/streams y backpressure revisados.
-- No se ha configurado remoto/autenticación GitHub ni firewall; son acciones
-  externas pendientes del usuario.
+- Repositorio remoto: `https://github.com/Kakuze13/Proyecto-Final-ACS`, rama
+  `main`; commit inicial `9cdb5453558bd9ecb3852c742341db16febad2f2` verificado.
+- Firewall y pruebas entre equipos requieren configuración externa y siguen
+  pendientes; no son necesarios para loopback.
