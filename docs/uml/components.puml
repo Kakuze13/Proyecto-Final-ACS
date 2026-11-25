@@ -1,0 +1,31 @@
+@startuml
+actor Usuario
+component "Cliente consola" as Client
+component "TCP asyncio" as TCP
+component "Sesiones cliente" as Sessions
+component "Protocolo JSON-LF" as Protocol
+component "Connection Manager" as Connections
+component "Room Service" as Rooms
+component "Chat Service" as Chat
+component "Event Manager" as Events
+component "Room Repository" as RoomRepo
+component "Message Repository" as MessageRepo
+component "Database" as Database
+database SQLite
+
+Usuario --> Client
+Client <--> TCP
+TCP --> Sessions
+Sessions --> Protocol
+Sessions --> Connections
+Sessions --> Rooms
+Sessions --> Chat
+Rooms --> RoomRepo
+RoomRepo --> Database
+Chat --> MessageRepo
+MessageRepo --> Database
+Database --> SQLite
+Rooms --> Events
+Chat --> Events
+Events --> Sessions : colas acotadas por sesión
+@enduml

@@ -1,0 +1,28 @@
+@startuml
+actor Usuario
+participant "Cliente consola" as Client
+participant "Servidor asyncio" as Server
+participant "ClientSession" as Session
+participant "ConnectionManager" as Manager
+participant "Protocolo" as Protocol
+participant "EventManager" as Events
+
+Usuario -> Client: iniciar y elegir nombre
+Client -> Server: abrir TCP
+Server -> Session: crear sesión (reader, writer)
+Client -> Server: CONNECT JSON-LF
+Server -> Protocol: decodificar y validar frame
+Protocol --> Session: solicitud CONNECT
+Session -> Manager: registrar nombre único
+Manager --> Session: sesión identificada
+Session --> Client: SUCCESS
+Session -> Events: publicar USER_CONNECTED
+Events -> Manager: resolver sesiones conectadas
+Events --> Session: encolar en colas acotadas
+... solicitudes posteriores por la misma conexión ...
+Client -> Server: DISCONNECT o cierre TCP
+Server -> Session: retirar y cerrar
+Session -> Manager: liberar identidad
+Session -> Events: publicar USER_DISCONNECTED
+Session --> Client: cerrar stream y tareas
+@enduml
