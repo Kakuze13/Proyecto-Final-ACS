@@ -39,6 +39,19 @@ En otra terminal, iniciar el cliente:
 python -m client.main --host 127.0.0.1 --port 8765
 ```
 
+También se puede usar la interfaz gráfica de escritorio:
+
+```powershell
+python -m client.gui --host 127.0.0.1 --port 8765
+```
+
+La interfaz permite crear salas, unirse, consultar integrantes e intercambiar
+mensajes en tiempo real. Los controles se pueden recorrer con `Tab` y las
+salas con las flechas del teclado. En el chat, `Ctrl+Enter` envía el mensaje,
+`Ctrl+L` enfoca el cuadro de escritura y `Ctrl+R` actualiza las salas. Los
+botones `A−` y `A+` ajustan el tamaño del texto. Los nombres de sala se
+normalizan a minúsculas y admiten letras, números, `_` y `-`.
+
 El servidor crea la base local `chatroom.db`. Usa `Ctrl+C` para detenerlo; se
 cierran el listener, las sesiones y sus tareas. `127.0.0.1` solo permite
 conexiones desde el mismo equipo. Para una red local se puede usar
