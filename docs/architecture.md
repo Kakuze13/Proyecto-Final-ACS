@@ -45,6 +45,13 @@ de la sesión autenticada, nunca de un campo enviado con `SEND_MESSAGE`.
 7. Al cerrar, la sesión se elimina de conexiones y salas, se cancelan tareas y se
    liberan streams; los demás clientes permanecen atendidos.
 
+El listener solicita `SO_REUSEADDR` mediante `reuse_address=True` en
+`asyncio.start_server`. El proceso atiende `SIGINT` y `SIGTERM` con un evento de
+parada y ejecuta `SocketServer.close()` para dejar de aceptar conexiones y
+cerrar streams y tareas. En Windows, donde el event loop puede no admitir
+`add_signal_handler`, `Ctrl+C` se atiende mediante `KeyboardInterrupt` de
+`asyncio.run` y el mismo bloque `finally` de cierre.
+
 ## Concurrencia y estado compartido
 
 Se usa un único Event Loop `asyncio`, adecuado para conexiones TCP con I/O

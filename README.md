@@ -56,6 +56,9 @@ El servidor crea la base local `chatroom.db`. Usa `Ctrl+C` para detenerlo; se
 cierran el listener, las sesiones y sus tareas. `127.0.0.1` solo permite
 conexiones desde el mismo equipo. Para una red local se puede usar
 `--host 0.0.0.0`, pero el usuario debe revisar firewall y permisos del equipo.
+En sistemas cuyo event loop admite manejadores de señal, `SIGTERM` también
+activa el cierre ordenado. El listener solicita `SO_REUSEADDR` con
+`asyncio.start_server(reuse_address=True)`.
 
 ## Comandos del cliente
 

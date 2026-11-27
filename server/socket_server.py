@@ -76,6 +76,7 @@ class SocketServer:
             self.port,
             backlog=self.max_connections,
             limit=65_536,
+            reuse_address=True,
         )
         logger.info("Servidor TCP escuchando en %s:%s", self.host, self.port)
 

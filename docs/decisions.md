@@ -20,8 +20,9 @@
 - Estado: propuesto para el MVP.
 - Decisión: `asyncio.start_server`; TCP local `127.0.0.1:8765` por defecto.
 - Motivo: demuestra TCP real y deja ciclo de vida de sockets a una API estándar.
-- Consecuencia: no se crea un segundo listener. `SO_REUSEADDR` se configura solo
-  si es seguro y necesario para la plataforma; no se usa `SO_REUSEPORT`.
+- Consecuencia: no se crea un segundo listener. `asyncio.start_server` recibe
+  `reuse_address=True` para solicitar `SO_REUSEADDR`; no se usa `SO_REUSEPORT`,
+  que no es necesario para este único listener.
 
 ## ADR-004: framing JSON
 

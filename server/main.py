@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import logging
+import signal
 
 from server.socket_server import SocketServer
 
@@ -33,10 +34,22 @@ async def run_server(
         socket_send_buffer=socket_send_buffer,
     )
     await server.start()
+    loop = asyncio.get_running_loop()
+    stop = asyncio.Event()
+    installed_signals: list[signal.Signals] = []
+    for shutdown_signal in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(shutdown_signal, stop.set)
+            installed_signals.append(shutdown_signal)
+        except (NotImplementedError, RuntimeError, ValueError):
+            # Windows event loops may not support add_signal_handler.
+            continue
     try:
-        await server.serve_forever()
+        await stop.wait()
     finally:
         await server.close()
+        for shutdown_signal in installed_signals:
+            loop.remove_signal_handler(shutdown_signal)
 
 
 def main() -> None:
