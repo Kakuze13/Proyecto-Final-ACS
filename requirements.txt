@@ -4,3 +4,4 @@ packaging==26.4
 pluggy==1.7.0
 Pygments==2.21.0
 pytest==8.4.2
+flet[desktop]>=1.1,<2

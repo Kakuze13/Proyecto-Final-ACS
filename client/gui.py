@@ -2,750 +2,912 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import queue
-import threading
-import tkinter as tk
-from collections.abc import Coroutine
 from datetime import datetime
-from tkinter import font as tkfont
-from tkinter import messagebox, ttk
+from pathlib import Path
 from typing import Any
-from concurrent.futures import Future
+
+import flet as ft
 
 from client.command_handler import new_request
 from client.tcp_client import TcpClient
 
 
+BG = "#1e1f22"
+SERVER_BAR = "#111214"
+SIDEBAR = "#2b2d31"
+PANEL = "#313338"
+INPUT = "#383a40"
+TEXT = "#f2f3f5"
+MUTED = "#949ba4"
+ACCENT = "#5865f2"
+GREEN = "#23a559"
+ASSETS_DIR = Path(__file__).resolve().parents[1] / "assets"
+
+
 class ChatRoomApp:
-    def __init__(self, root: tk.Tk, host: str, port: int) -> None:
-        self.root = root
+    """Flet desktop client with a dark, Discord-inspired chat layout."""
+
+    def __init__(self, page: ft.Page, host: str, port: int) -> None:
+        self.page = page
         self.default_host = host
         self.default_port = port
-        self.ui_events: queue.Queue[tuple[str, str, Any]] = queue.Queue()
-        self.loop = asyncio.new_event_loop()
-        self.loop_thread = threading.Thread(
-            target=self._run_loop,
-            name="chatroom-network",
-            daemon=True,
-        )
-        self.loop_thread.start()
         self.client: TcpClient | None = None
         self.username = ""
         self.selected_room: str | None = None
         self.joined_rooms: set[str] = set()
         self.room_names: list[str] = []
         self.room_owners: dict[str, str] = {}
-        self.messages: dict[str, dict[tuple[str, str, str], dict[str, str]]] = {}
-        self.text_size = 12
-        self._closing = False
+        self.messages: dict[str, dict[tuple[str, str, str], dict[str, Any]]] = {}
+        self.members: list[str] = []
         self._sending = False
+        self._closing = False
+        self._event_task: asyncio.Task[None] | None = None
 
-        self.root.title("ChatRoom")
-        self.root.geometry("1050x680")
-        self.root.minsize(760, 520)
-        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        page.title = "ChatRoom"
+        page.theme_mode = ft.ThemeMode.DARK
+        page.theme = ft.Theme(color_scheme_seed=ACCENT)
+        page.bgcolor = BG
+        page.padding = 0
+        page.spacing = 0
+        page.window.width = 1180
+        page.window.height = 760
+        page.window.icon = str(ASSETS_DIR / "icon.ico")
+        page.window.min_width = 540
+        page.window.min_height = 360
+        page.window.prevent_close = True
+        page.window.on_event = self._on_window_event
+        page.on_disconnect = self._on_disconnect
+        page.on_resize = self._on_resize
         self._build_login()
-        self.root.after(50, self._process_ui_events)
 
-    def _run_loop(self) -> None:
-        asyncio.set_event_loop(self.loop)
-        self.loop.run_forever()
-        pending = asyncio.all_tasks(self.loop)
-        for task in pending:
-            task.cancel()
-        if pending:
-            self.loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-        self.loop.close()
+    def _build_login(self) -> None:
+        self.username_field = ft.TextField(
+            label="Nombre de usuario",
+            hint_text="3-20 letras, números o _",
+            autofocus=True,
+            prefix_icon=ft.Icons.PERSON_OUTLINE,
+            border=ft.OutlineInputBorder(border_radius=10),
+            bgcolor=INPUT,
+            on_submit=self._connect,
+        )
+        self.host_field = ft.TextField(
+            label="Servidor",
+            value=self.default_host,
+            prefix_icon=ft.Icons.DNS_OUTLINED,
+            border=ft.OutlineInputBorder(border_radius=10),
+            bgcolor=INPUT,
+        )
+        self.port_field = ft.TextField(
+            label="Puerto",
+            value=str(self.default_port),
+            width=150,
+            prefix_icon=ft.Icons.ROUTER_OUTLINED,
+            border=ft.OutlineInputBorder(border_radius=10),
+            bgcolor=INPUT,
+            on_submit=self._connect,
+        )
+        self.login_status = ft.Text("Conéctate al servidor para abrir ChatRoom.", color=MUTED)
+        self.connect_button = ft.Button(
+            content="Conectar",
+            icon=ft.Icons.LOGIN,
+            on_click=self._connect,
+            bgcolor=ACCENT,
+            color=TEXT,
+            height=46,
+        )
+        card = ft.Container(
+            width=460,
+            padding=36,
+            border_radius=16,
+            bgcolor=PANEL,
+            content=ft.Column(
+                spacing=16,
+                horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+                controls=[
+                    ft.Container(
+                        width=58,
+                        height=58,
+                        alignment=ft.Alignment.CENTER,
+                        border_radius=18,
+                        bgcolor=ACCENT,
+                        content=ft.Icon(ft.Icons.FORUM_ROUNDED, size=30, color=TEXT),
+                    ),
+                    ft.Text("ChatRoom", size=30, weight=ft.FontWeight.BOLD, color=TEXT),
+                    ft.Text("Mensajería por salas en tiempo real", color=MUTED),
+                    ft.Container(height=2),
+                    self.username_field,
+                    self.host_field,
+                    ft.Row([self.port_field], alignment=ft.MainAxisAlignment.START),
+                    self.login_status,
+                    self.connect_button,
+                ],
+            ),
+        )
+        page_body = ft.Container(
+            expand=True,
+            padding=24,
+            content=ft.Column(
+                expand=True,
+                scroll=ft.ScrollMode.AUTO,
+                alignment=ft.MainAxisAlignment.CENTER,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[card],
+            ),
+            gradient=ft.LinearGradient(
+                begin=ft.Alignment.TOP_LEFT,
+                end=ft.Alignment.BOTTOM_RIGHT,
+                colors=["#17181b", "#24264a"],
+            ),
+        )
+        self.page.clean()
+        self.page.add(page_body)
 
-    def _submit(
-        self,
-        coroutine: Coroutine[Any, Any, dict[str, Any]],
-        action: str,
-    ) -> None:
-        future = asyncio.run_coroutine_threadsafe(coroutine, self.loop)
+    async def _connect(self, _event: Any = None) -> None:
+        username = (self.username_field.value or "").strip()
+        host = (self.host_field.value or "").strip()
+        try:
+            port = int((self.port_field.value or "").strip())
+            if not 1 <= port <= 65535:
+                raise ValueError
+        except ValueError:
+            self.login_status.value = "El puerto debe ser un número entre 1 y 65535."
+            self.page.update()
+            return
+        if not username or not host:
+            self.login_status.value = "Completa el usuario y el servidor."
+            self.page.update()
+            return
 
-        def completed(result: Future[dict[str, Any]]) -> None:
-            try:
-                value = result.result()
-            except Exception as error:
-                self.ui_events.put(("error", action, str(error)))
-            else:
-                self.ui_events.put(("result", action, value))
-
-        future.add_done_callback(completed)
-
-    async def _connect(self, host: str, port: int, username: str) -> dict[str, Any]:
+        self.connect_button.disabled = True
+        self.login_status.value = "Conectando…"
+        self.page.update()
         client = TcpClient()
         try:
             await client.connect(host, port)
             response = await client.request(new_request("CONNECT", username=username))
-            if response.get("type") == "SUCCESS":
-                self.client = client
-                self.username = username
-                asyncio.create_task(self._forward_events(client))
-                return response
-            return response
-        finally:
-            if self.client is not client:
+            if response.get("type") != "SUCCESS":
+                self.login_status.value = response.get("message", "No se pudo conectar.")
                 await client.close()
+                self.connect_button.disabled = False
+                self.page.update()
+                return
+        except (OSError, asyncio.TimeoutError, ConnectionError) as error:
+            await client.close()
+            self.login_status.value = f"No se pudo conectar: {error}"
+            self.connect_button.disabled = False
+            self.page.update()
+            return
 
-    async def _forward_events(self, client: TcpClient) -> None:
-        while True:
-            event = await client.events.get()
-            self.ui_events.put(("event", "", event))
+        self.client = client
+        self.username = username
+        self._build_chat()
+        self._event_task = asyncio.create_task(self._listen_events(client))
+        await self._refresh_rooms()
+
+    def _build_chat(self) -> None:
+        self.status_text = ft.Text("Conectado", size=12, color=GREEN)
+        self.room_list = ft.Column(spacing=3, scroll=ft.ScrollMode.AUTO, expand=True)
+        self.message_list = ft.ListView(
+            expand=True,
+            spacing=18,
+            padding=ft.Padding.symmetric(horizontal=24, vertical=20),
+            auto_scroll=True,
+        )
+        self.member_list = ft.Column(spacing=8, scroll=ft.ScrollMode.AUTO, expand=True)
+        self.room_title = ft.Text("Elige una sala", size=19, weight=ft.FontWeight.BOLD)
+        self.room_subtitle = ft.Text("", size=12, color=MUTED)
+        self.leave_button = ft.IconButton(
+            icon=ft.Icons.EXIT_TO_APP,
+            tooltip="Salir de esta sala",
+            icon_color=MUTED,
+            visible=False,
+            on_click=self._leave_room,
+        )
+        self.delete_button = ft.IconButton(
+            icon=ft.Icons.DELETE_OUTLINE,
+            tooltip="Eliminar sala",
+            icon_color="#ed4245",
+            visible=False,
+            on_click=self._delete_selected_room,
+        )
+        self.member_count = ft.Text("INTEGRANTES —", size=11, weight=ft.FontWeight.BOLD, color=MUTED)
+        self.room_name_field = ft.TextField(
+            hint_text="Crear una sala",
+            dense=True,
+            bgcolor=INPUT,
+            border=ft.OutlineInputBorder(border_radius=8),
+            expand=True,
+            on_submit=self._create_room,
+        )
+        self.room_name_field.visible = False
+        self.create_room_form = ft.Row(
+            spacing=6,
+            visible=False,
+            controls=[
+                self.room_name_field,
+                ft.IconButton(
+                    icon=ft.Icons.CHECK,
+                    tooltip="Crear sala",
+                    icon_color=GREEN,
+                    on_click=self._create_room,
+                ),
+                ft.IconButton(
+                    icon=ft.Icons.CLOSE,
+                    tooltip="Cancelar",
+                    icon_color=MUTED,
+                    on_click=self._toggle_create_room,
+                ),
+            ],
+        )
+        self.create_room_toggle = ft.IconButton(
+            icon=ft.Icons.ADD,
+            icon_size=18,
+            tooltip="Crear sala",
+            icon_color=MUTED,
+            on_click=self._toggle_create_room,
+        )
+        self.message_field = ft.TextField(
+            hint_text="Elige una sala y escribe un mensaje…",
+            multiline=True,
+            min_lines=1,
+            max_lines=5,
+            shift_enter=True,
+            disabled=True,
+            filled=True,
+            bgcolor=INPUT,
+            border={
+                ft.ControlState.DEFAULT: ft.OutlineInputBorder(
+                    border_radius=10,
+                    side=ft.BorderSide.none(),
+                ),
+                ft.ControlState.FOCUSED: ft.OutlineInputBorder(
+                    border_radius=10,
+                    side=ft.BorderSide.none(),
+                ),
+            },
+            expand=True,
+            on_submit=self._send_message,
+        )
+        self.send_button = ft.IconButton(
+            icon=ft.Icons.SEND_ROUNDED,
+            tooltip="Enviar mensaje",
+            icon_color=TEXT,
+            bgcolor=ACCENT,
+            on_click=self._send_message,
+            disabled=True,
+        )
+
+        self.server_rail = ft.Container(
+            width=68,
+            bgcolor=SERVER_BAR,
+            padding=ft.Padding.symmetric(vertical=14),
+            content=ft.Column(
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                spacing=12,
+                controls=[
+                    ft.Container(
+                        width=46,
+                        height=46,
+                        border_radius=16,
+                        bgcolor=ACCENT,
+                        alignment=ft.Alignment.CENTER,
+                        content=ft.Icon(ft.Icons.FORUM_ROUNDED, color=TEXT, size=24),
+                        tooltip="ChatRoom",
+                    ),
+                    ft.Container(width=30, height=2, bgcolor="#3f4147", border_radius=2),
+                    ft.Container(
+                        width=46,
+                        height=46,
+                        border_radius=16,
+                        bgcolor="#35373c",
+                        alignment=ft.Alignment.CENTER,
+                        content=ft.Text("#", size=24, weight=ft.FontWeight.BOLD, color=TEXT),
+                        tooltip="Salas",
+                    ),
+                    ft.Container(expand=True),
+                    ft.IconButton(
+                        icon=ft.Icons.LOGOUT,
+                        tooltip="Cerrar aplicación",
+                        icon_color=MUTED,
+                        on_click=self._quit_app,
+                    ),
+                ],
+            ),
+        )
+
+        self.channel_sidebar = ft.Container(
+            width=244,
+            bgcolor=SIDEBAR,
+            padding=ft.Padding.only(left=12, right=12, top=0, bottom=10),
+            content=ft.Column(
+                spacing=0,
+                controls=[
+                    ft.Container(
+                        height=58,
+                        padding=ft.Padding.symmetric(horizontal=6),
+                        border=ft.Border.only(bottom=ft.BorderSide(1, "#202226")),
+                        content=ft.Row(
+                            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                            controls=[
+                                ft.Text("ChatRoom", size=16, weight=ft.FontWeight.BOLD),
+                                ft.Icon(ft.Icons.EXPAND_MORE, color=MUTED),
+                            ],
+                        ),
+                    ),
+                    ft.Container(height=16),
+                    ft.Row(
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        controls=[
+                            ft.Text("SALAS", size=11, weight=ft.FontWeight.BOLD, color=MUTED),
+                            self.create_room_toggle,
+                        ],
+                    ),
+                    self.create_room_form,
+                    self.room_list,
+                    ft.Container(height=10),
+                    ft.Container(
+                        padding=10,
+                        border_radius=8,
+                        bgcolor="#232428",
+                        content=ft.Row(
+                            spacing=9,
+                            controls=[
+                                ft.CircleAvatar(
+                                    content=ft.Text(self.username[:1].upper(), size=14),
+                                    bgcolor=ACCENT,
+                                    radius=17,
+                                ),
+                                ft.Column(
+                                    spacing=1,
+                                    expand=True,
+                                    controls=[
+                                        ft.Text(self.username, size=12, weight=ft.FontWeight.BOLD),
+                                        self.status_text,
+                                    ],
+                                ),
+                                ft.IconButton(
+                                    icon=ft.Icons.LOGOUT,
+                                    tooltip="Cerrar sesión y volver al inicio",
+                                    icon_color="#ed4245",
+                                    icon_size=18,
+                                    on_click=self._logout_session,
+                                ),
+                            ],
+                        ),
+                    ),
+                ],
+            ),
+        )
+
+        self.chat_body = ft.Column(
+            spacing=0,
+            expand=True,
+            controls=[
+                ft.Container(
+                    height=58,
+                    padding=ft.Padding.symmetric(horizontal=20),
+                    border=ft.Border.only(bottom=ft.BorderSide(1, "#26272b")),
+                    content=ft.Row(
+                        controls=[
+                            ft.Icon(ft.Icons.TAG, color=MUTED, size=20),
+                            ft.Column(spacing=0, controls=[self.room_title, self.room_subtitle]),
+                            ft.Container(expand=True),
+                            self.leave_button,
+                            self.delete_button,
+                            ft.IconButton(
+                                icon=ft.Icons.GROUP_OUTLINED,
+                                tooltip="Actualizar integrantes",
+                                icon_color=MUTED,
+                                on_click=self._load_members,
+                            ),
+                            ft.IconButton(
+                                icon=ft.Icons.REFRESH,
+                                tooltip="Actualizar salas",
+                                icon_color=MUTED,
+                                on_click=self._refresh_rooms,
+                            ),
+                        ],
+                    ),
+                ),
+                self.message_list,
+                ft.Container(
+                    padding=ft.Padding.only(left=20, right=20, top=8, bottom=18),
+                    content=ft.Row(
+                        spacing=8,
+                        vertical_alignment=ft.CrossAxisAlignment.END,
+                        controls=[
+                            ft.Container(
+                                expand=True,
+                                padding=ft.Padding.symmetric(horizontal=12, vertical=4),
+                                bgcolor=INPUT,
+                                border_radius=10,
+                                content=self.message_field,
+                            ),
+                            self.send_button,
+                        ],
+                    ),
+                ),
+            ],
+        )
+
+        self.members_sidebar = ft.Container(
+            width=205,
+            bgcolor=SIDEBAR,
+            padding=ft.Padding.only(left=14, right=14, top=20, bottom=12),
+            content=ft.Column(
+                spacing=14,
+                controls=[self.member_count, self.member_list],
+            ),
+        )
+
+        self.page.clean()
+        self.page.add(
+            ft.Row(
+                spacing=0,
+                expand=True,
+                controls=[self.server_rail, self.channel_sidebar, self.chat_body, self.members_sidebar],
+            )
+        )
+        self._render_rooms()
+        self._render_members()
+        self._on_resize()
+
+    def _on_resize(self, _event: Any = None) -> None:
+        if not hasattr(self, "members_sidebar"):
+            return
+        width = self.page.width or 1180
+        self.members_sidebar.visible = width >= 940
+        self.server_rail.visible = width >= 680
+        self.channel_sidebar.width = 244 if width >= 800 else 188
+        self.page.update()
+
+    def _room_tile(self, room: str, member_count: int) -> ft.Control:
+        joined = room in self.joined_rooms
+        selected = room == self.selected_room
+        return ft.Container(
+            padding=ft.Padding.symmetric(horizontal=10, vertical=8),
+            border_radius=6,
+            bgcolor="#404249" if selected else "transparent",
+            on_click=lambda _e, room_name=room: self._select_room(room_name),
+            content=ft.Row(
+                spacing=8,
+                controls=[
+                    ft.Icon(ft.Icons.TAG, size=17, color=TEXT if selected else MUTED),
+                    ft.Text(room, size=13, color=TEXT if selected else MUTED, expand=True),
+                    ft.Text(str(member_count), size=11, color=MUTED),
+                    ft.Icon(ft.Icons.CHECK, size=14, color=GREEN) if joined else ft.Container(width=0),
+                ],
+            ),
+        )
+
+    def _render_rooms(self) -> None:
+        if not hasattr(self, "room_list"):
+            return
+        counts = getattr(self, "room_counts", {})
+        self.room_list.controls = [self._room_tile(room, counts.get(room, 0)) for room in self.room_names]
+        self.room_list.controls.append(
+            ft.Text("No hay salas todavía. Crea la primera.", size=12, color=MUTED)
+            if not self.room_names
+            else ft.Container(height=0)
+        )
+        self.room_list.update()
+
+    def _render_members(self) -> None:
+        if not hasattr(self, "member_list"):
+            return
+        self.member_count.value = f"INTEGRANTES — {len(self.members)}"
+        self.member_list.controls = [
+            ft.Row(
+                spacing=9,
+                controls=[
+                    ft.CircleAvatar(
+                        content=ft.Text(name[:1].upper(), size=12),
+                        bgcolor=ACCENT if name == self.username else "#4e5058",
+                        radius=14,
+                    ),
+                    ft.Text(name, size=12, color=TEXT if name == self.username else MUTED),
+                ],
+            )
+            for name in self.members
+        ] or [ft.Text("Únete a una sala para ver sus integrantes.", size=12, color=MUTED)]
+        self.member_list.update()
+        self.member_count.update()
+
+    def _render_messages(self, room: str) -> None:
+        if not hasattr(self, "message_list"):
+            return
+        messages = sorted(self.messages.get(room, {}).values(), key=lambda item: item["timestamp"])
+        self.message_list.controls = [self._message_card(message) for message in messages]
+        if not messages:
+            self.message_list.controls = [
+                ft.Container(
+                    expand=True,
+                    alignment=ft.Alignment.CENTER,
+                    content=ft.Column(
+                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            ft.Icon(ft.Icons.FORUM_OUTLINED, size=46, color="#555861"),
+                            ft.Text(f"Este es el comienzo de #{room}", size=18, weight=ft.FontWeight.BOLD),
+                            ft.Text("Envía el primer mensaje de la sala.", color=MUTED),
+                        ],
+                    ),
+                )
+            ]
+        self.message_list.update()
+
+    def _message_card(self, message: dict[str, Any]) -> ft.Control:
+        try:
+            stamp = datetime.fromisoformat(message["timestamp"].replace("Z", "+00:00"))
+            time_label = stamp.astimezone().strftime("%b %d, %H:%M")
+        except (KeyError, ValueError):
+            time_label = ""
+        username = str(message.get("username", "Usuario"))
+        return ft.Row(
+            vertical_alignment=ft.CrossAxisAlignment.START,
+            spacing=12,
+            controls=[
+                ft.CircleAvatar(
+                    content=ft.Text(username[:1].upper(), size=14),
+                    bgcolor=ACCENT if username == self.username else "#4e5058",
+                    radius=18,
+                ),
+                ft.Column(
+                    spacing=3,
+                    expand=True,
+                    controls=[
+                        ft.Row(
+                            spacing=8,
+                            controls=[
+                                ft.Text(username, size=14, weight=ft.FontWeight.BOLD),
+                                ft.Text(time_label, size=10, color=MUTED),
+                            ],
+                        ),
+                        ft.Text(str(message.get("content", "")), size=14, color="#dbdee1"),
+                    ],
+                ),
+            ],
+        )
 
     async def _request(self, message_type: str, **fields: Any) -> dict[str, Any]:
         if self.client is None:
-            raise ConnectionError("No hay una conexión activa con el servidor")
-        return await self.client.request(new_request(message_type, **fields))
-
-    def _build_login(self) -> None:
-        self.login_frame = ttk.Frame(self.root, padding=32)
-        self.login_frame.pack(expand=True)
-        self.login_frame.columnconfigure(1, weight=1)
-
-        ttk.Label(
-            self.login_frame,
-            text="ChatRoom",
-            font=("Segoe UI", 22, "bold"),
-        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
-        ttk.Label(
-            self.login_frame,
-            text="Mensajería por salas en tiempo real",
-            font=("Segoe UI", 12),
-        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 24))
-
-        ttk.Label(self.login_frame, text="Usuario (3-20 letras, números o _):").grid(
-            row=2, column=0, sticky="w", padx=(0, 12), pady=8
-        )
-        self.username_entry = ttk.Entry(self.login_frame, width=32)
-        self.username_entry.grid(row=2, column=1, sticky="ew", pady=8)
-
-        ttk.Label(self.login_frame, text="Servidor:").grid(
-            row=3, column=0, sticky="w", padx=(0, 12), pady=8
-        )
-        self.host_entry = ttk.Entry(self.login_frame, width=32)
-        self.host_entry.insert(0, self.default_host)
-        self.host_entry.grid(row=3, column=1, sticky="ew", pady=8)
-
-        ttk.Label(self.login_frame, text="Puerto:").grid(
-            row=4, column=0, sticky="w", padx=(0, 12), pady=8
-        )
-        self.port_entry = ttk.Entry(self.login_frame, width=12)
-        self.port_entry.insert(0, str(self.default_port))
-        self.port_entry.grid(row=4, column=1, sticky="w", pady=8)
-
-        self.status_var = tk.StringVar(value="Ingresa tus datos para conectarte.")
-        ttk.Label(
-            self.login_frame,
-            textvariable=self.status_var,
-            wraplength=420,
-        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(12, 4))
-
-        self.connect_button = ttk.Button(
-            self.login_frame,
-            text="Conectar",
-            command=self._connect_from_form,
-        )
-        self.connect_button.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(12, 0))
-        self.username_entry.bind("<Return>", lambda _event: self._connect_from_form())
-        self.port_entry.bind("<Return>", lambda _event: self._connect_from_form())
-        self.username_entry.focus_set()
-
-    def _build_chat(self) -> None:
-        self.login_frame.destroy()
-        self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(0, weight=1)
-
-        layout = ttk.Panedwindow(self.root, orient="horizontal")
-        layout.grid(row=0, column=0, sticky="nsew")
-        sidebar = ttk.Frame(layout, padding=12)
-        conversation = ttk.Frame(layout, padding=12)
-        layout.add(sidebar, weight=1)
-        layout.add(conversation, weight=4)
-
-        sidebar.columnconfigure(0, weight=1)
-        sidebar.rowconfigure(3, weight=1)
-        ttk.Label(sidebar, text=f"Conectado como {self.username}").grid(
-            row=0, column=0, sticky="w", pady=(0, 12)
-        )
-        ttk.Label(sidebar, text="Salas").grid(row=1, column=0, sticky="w")
-
-        room_form = ttk.Frame(sidebar)
-        room_form.grid(row=2, column=0, sticky="ew", pady=(6, 8))
-        room_form.columnconfigure(0, weight=1)
-        self.room_entry = ttk.Entry(room_form)
-        self.room_entry.grid(row=0, column=0, sticky="ew")
-        self.room_entry.insert(0, "nombre-sala")
-        self.room_entry.bind("<FocusIn>", self._clear_room_hint)
-        self.room_entry.bind("<Return>", lambda _event: self._create_room())
-        ttk.Button(room_form, text="Crear sala", command=self._create_room).grid(
-            row=1, column=0, sticky="ew", pady=(5, 0)
-        )
-
-        room_list_frame = ttk.Frame(sidebar)
-        room_list_frame.grid(row=3, column=0, sticky="nsew")
-        room_list_frame.columnconfigure(0, weight=1)
-        room_list_frame.rowconfigure(0, weight=1)
-        self.room_list = tk.Listbox(
-            room_list_frame,
-            exportselection=False,
-            activestyle="underline",
-            height=12,
-            font=("Segoe UI", self.text_size),
-            selectmode=tk.SINGLE,
-        )
-        room_scroll = ttk.Scrollbar(
-            room_list_frame,
-            orient="vertical",
-            command=self.room_list.yview,
-        )
-        self.room_list.configure(yscrollcommand=room_scroll.set)
-        self.room_list.grid(row=0, column=0, sticky="nsew")
-        room_scroll.grid(row=0, column=1, sticky="ns")
-        self.room_list.bind("<<ListboxSelect>>", self._select_room)
-        self.room_list.bind("<Return>", lambda _event: self._join_room())
-
-        room_actions = ttk.Frame(sidebar)
-        room_actions.grid(row=4, column=0, sticky="ew", pady=(8, 0))
-        room_actions.columnconfigure(0, weight=1)
-        room_actions.columnconfigure(1, weight=1)
-        self.join_button = ttk.Button(
-            room_actions,
-            text="Unirse",
-            command=self._join_room,
-        )
-        self.join_button.grid(row=0, column=0, sticky="ew", padx=(0, 4), pady=3)
-        self.leave_button = ttk.Button(
-            room_actions,
-            text="Salir de sala",
-            command=self._leave_room,
-        )
-        self.leave_button.grid(row=0, column=1, sticky="ew", padx=(4, 0), pady=3)
-        ttk.Button(
-            room_actions,
-            text="Actualizar salas",
-            command=self._refresh_rooms,
-        ).grid(row=1, column=0, columnspan=2, sticky="ew", pady=3)
-        ttk.Button(
-            room_actions,
-            text="Ver integrantes",
-            command=self._list_members,
-        ).grid(row=2, column=0, columnspan=2, sticky="ew", pady=3)
-        self.delete_room_button = ttk.Button(
-            room_actions,
-            text="Eliminar sala",
-            command=self._delete_room,
-        )
-        self.delete_room_button.grid(
-            row=3,
-            column=0,
-            columnspan=2,
-            sticky="ew",
-            pady=3,
-        )
-
-        conversation.columnconfigure(0, weight=1)
-        conversation.rowconfigure(1, weight=1)
-        header = ttk.Frame(conversation)
-        header.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        header.columnconfigure(0, weight=1)
-        self.room_title = tk.StringVar(value="Selecciona una sala")
-        ttk.Label(
-            header,
-            textvariable=self.room_title,
-            font=("Segoe UI", 16, "bold"),
-        ).grid(row=0, column=0, sticky="w")
-        self.members_var = tk.StringVar(value="Elige una sala y únete para conversar.")
-        ttk.Label(header, textvariable=self.members_var).grid(
-            row=1, column=0, sticky="w", pady=(3, 0)
-        )
-        font_controls = ttk.Frame(header)
-        font_controls.grid(row=0, column=1, rowspan=2, sticky="e")
-        ttk.Button(
-            font_controls,
-            text="A−",
-            width=4,
-            command=lambda: self._change_text_size(-1),
-        ).grid(row=0, column=0, padx=2)
-        ttk.Button(
-            font_controls,
-            text="A+",
-            width=4,
-            command=lambda: self._change_text_size(1),
-        ).grid(row=0, column=1, padx=2)
-        ttk.Label(font_controls, text="Tamaño del texto").grid(
-            row=1, column=0, columnspan=2
-        )
-
-        chat_frame = ttk.Frame(conversation)
-        chat_frame.grid(row=1, column=0, sticky="nsew")
-        chat_frame.columnconfigure(0, weight=1)
-        chat_frame.rowconfigure(0, weight=1)
-        self.chat_font = tkfont.Font(
-            root=self.root,
-            family="Segoe UI",
-            size=self.text_size,
-        )
-        self.chat_display = tk.Text(
-            chat_frame,
-            wrap="word",
-            state="disabled",
-            font=self.chat_font,
-            background="white",
-            foreground="black",
-            padx=12,
-            pady=12,
-            spacing1=3,
-            spacing3=8,
-            takefocus=True,
-        )
-        chat_scroll = ttk.Scrollbar(
-            chat_frame,
-            orient="vertical",
-            command=self.chat_display.yview,
-        )
-        self.chat_display.configure(yscrollcommand=chat_scroll.set)
-        self.chat_display.grid(row=0, column=0, sticky="nsew")
-        chat_scroll.grid(row=0, column=1, sticky="ns")
-        self.chat_display.tag_configure("sender", font=("Segoe UI", self.text_size, "bold"))
-        self.chat_display.tag_configure("system", foreground="#333333")
-
-        composer_frame = ttk.Frame(conversation)
-        composer_frame.grid(row=2, column=0, sticky="ew", pady=(10, 0))
-        composer_frame.columnconfigure(0, weight=1)
-        ttk.Label(composer_frame, text="Mensaje (Ctrl+Enter para enviar):").grid(
-            row=0, column=0, columnspan=2, sticky="w", pady=(0, 4)
-        )
-        self.composer = tk.Text(
-            composer_frame,
-            height=3,
-            wrap="word",
-            font=self.chat_font,
-            background="white",
-            foreground="black",
-            takefocus=True,
-        )
-        self.composer.grid(row=1, column=0, sticky="ew")
-        self.composer.bind("<Control-Return>", self._send_from_shortcut)
-        self.send_button = ttk.Button(
-            composer_frame,
-            text="Enviar",
-            command=self._send_message,
-        )
-        self.send_button.grid(row=1, column=1, sticky="ns", padx=(8, 0))
-        self.root.bind_all("<Control-r>", lambda _event: self._refresh_rooms())
-        self.root.bind_all("<Control-l>", self._focus_composer)
-        self.status_var.set("Conectado. Selecciona o crea una sala.")
-        self._update_room_actions()
-        self._show_chat_text("Selecciona una sala de la lista para comenzar.")
-        self._refresh_rooms()
-
-    def _connect_from_form(self) -> None:
-        username = self.username_entry.get().strip()
-        host = self.host_entry.get().strip()
-        try:
-            port = int(self.port_entry.get().strip())
-            if not 1 <= port <= 65535:
-                raise ValueError
-        except ValueError:
-            self.status_var.set("El puerto debe ser un número entre 1 y 65535.")
-            self.port_entry.focus_set()
-            return
-        if not username or not host:
-            self.status_var.set("Completa el usuario y el servidor.")
-            return
-        self.connect_button.configure(state="disabled")
-        self.status_var.set("Conectando al servidor…")
-        self._submit(self._connect(host, port, username), "connect")
-
-    def _create_room(self) -> None:
-        room = self.room_entry.get().strip().lower()
-        if room and room != "nombre-sala":
-            self.room_entry.delete(0, tk.END)
-            self.room_entry.insert(0, room)
-            self._submit(self._request("CREATE_ROOM", room=room), "create")
-        else:
-            self.status_var.set("Escribe el nombre de la sala que quieres crear.")
-            self.room_entry.focus_set()
-
-    def _clear_room_hint(self, _event: tk.Event[Any]) -> None:
-        if self.room_entry.get() == "nombre-sala":
-            self.room_entry.delete(0, tk.END)
-
-    def _selected_room_name(self) -> str | None:
-        selection = self.room_list.curselection()
-        if not selection:
-            return None
-        index = selection[0]
-        if index >= len(self.room_names):
-            return None
-        return self.room_names[index]
-
-    def _select_room(self, _event: tk.Event[Any] | None = None) -> None:
-        room = self._selected_room_name()
-        if room is None:
-            return
-        self.selected_room = room
-        self.room_title.set(f"# {room}")
-        if room in self.joined_rooms:
-            self.members_var.set("Ya formas parte de esta sala.")
-            self._render_messages(room)
-        else:
-            self.members_var.set("Sala disponible. Pulsa «Unirse» para conversar.")
-            self._show_chat_text(f"Únete a #{room} para ver y enviar mensajes.")
-        self._update_room_actions()
-
-    def _join_room(self) -> None:
-        room = self._selected_room_name()
-        if room is None:
-            self.status_var.set("Selecciona una sala de la lista.")
-        elif room in self.joined_rooms:
-            self.status_var.set(f"Ya formas parte de #{room}.")
-        else:
-            self._submit(self._request("JOIN_ROOM", room=room), "join")
-
-    def _leave_room(self) -> None:
-        room = self._selected_room_name()
-        if room is None or room not in self.joined_rooms:
-            self.status_var.set("Selecciona una sala a la que ya te hayas unido.")
-            return
-        self._submit(self._request("LEAVE_ROOM", room=room), "leave")
-
-    def _delete_room(self) -> None:
-        room = self._selected_room_name()
-        if room is None or self.room_owners.get(room) != self.username:
-            self.status_var.set("Solo quien creó la sala puede eliminarla.")
-            return
-        confirmed = messagebox.askyesno(
-            "Eliminar sala",
-            f"¿Eliminar #{room}, su historial y retirar a todos sus integrantes?",
-            parent=self.root,
-        )
-        if confirmed:
-            self._submit(self._request("DELETE_ROOM", room=room), "delete")
-
-    def _refresh_rooms(self) -> None:
-        if self.client is not None:
-            self._submit(self._request("LIST_ROOMS"), "rooms")
-
-    def _list_members(self) -> None:
-        room = self._selected_room_name()
-        if room is None:
-            self.status_var.set("Selecciona una sala para consultar sus integrantes.")
-            return
-        self._submit(self._request("LIST_USERS", room=room), "members")
-
-    def _send_from_shortcut(self, _event: tk.Event[Any]) -> str:
-        self._send_message()
-        return "break"
-
-    def _send_message(self) -> None:
-        room = self.selected_room
-        if room is None or room not in self.joined_rooms:
-            self.status_var.set("Únete a una sala antes de enviar mensajes.")
-            return
-        if self._sending:
-            return
-        content = self.composer.get("1.0", "end-1c")
-        if not content.strip():
-            self.status_var.set("Escribe un mensaje antes de enviarlo.")
-            self.composer.focus_set()
-            return
-        self._sending = True
-        self.send_button.configure(state="disabled")
-        self._submit(
-            self._request("SEND_MESSAGE", room=room, content=content),
-            "send",
-        )
-
-    def _change_text_size(self, change: int) -> None:
-        self.text_size = min(24, max(10, self.text_size + change))
-        self.chat_font.configure(size=self.text_size)
-        self.room_list.configure(font=("Segoe UI", self.text_size))
-        self.chat_display.tag_configure(
-            "sender",
-            font=("Segoe UI", self.text_size, "bold"),
-        )
-
-    def _focus_composer(self, _event: tk.Event[Any]) -> str:
-        if hasattr(self, "composer") and str(self.composer["state"]) != "disabled":
-            self.composer.focus_set()
-        return "break"
-
-    def _update_room_actions(self) -> None:
-        room = self.selected_room
-        joined = room is not None and room in self.joined_rooms
-        self.join_button.configure(state="disabled" if joined or room is None else "normal")
-        self.leave_button.configure(state="normal" if joined else "disabled")
-        is_owner = room is not None and self.room_owners.get(room) == self.username
-        self.delete_room_button.configure(state="normal" if is_owner else "disabled")
-        self.composer.configure(state="normal" if joined else "disabled")
-        self.send_button.configure(
-            state="normal" if joined and not self._sending else "disabled"
-        )
-
-    def _show_chat_text(self, text: str) -> None:
-        self.chat_display.configure(state="normal")
-        self.chat_display.delete("1.0", tk.END)
-        self.chat_display.insert(tk.END, text, "system")
-        self.chat_display.configure(state="disabled")
-
-    def _render_messages(self, room: str) -> None:
-        self.chat_display.configure(state="normal")
-        self.chat_display.delete("1.0", tk.END)
-        messages = self.messages.get(room, {})
-        for message in sorted(messages.values(), key=lambda item: item["timestamp"]):
-            timestamp = self._format_time(message["timestamp"])
-            self.chat_display.insert(
-                tk.END,
-                f"{timestamp} · {message['username']}\n",
-                "sender",
-            )
-            self.chat_display.insert(tk.END, f"{message['content']}\n\n")
-        if not messages:
-            self.chat_display.insert(
-                tk.END,
-                "Todavía no hay mensajes en esta sala.\n",
-                "system",
-            )
-        self.chat_display.configure(state="disabled")
-        self.chat_display.see(tk.END)
-
-    @staticmethod
-    def _format_time(timestamp: str) -> str:
-        try:
-            parsed = timestamp.replace("Z", "+00:00")
-            return datetime.fromisoformat(parsed).astimezone().strftime("%H:%M")
-        except ValueError:
-            return timestamp
-
-    def _process_ui_events(self) -> None:
-        while True:
-            try:
-                kind, action, payload = self.ui_events.get_nowait()
-            except queue.Empty:
-                break
-            if kind == "result":
-                self._handle_result(action, payload)
-            elif kind == "error":
-                self._handle_error(action, payload)
-            elif kind == "event":
-                self._handle_server_event(payload)
-            elif kind == "closed":
-                self.root.destroy()
-                return
-        self.root.after(50, self._process_ui_events)
-
-    def _handle_result(self, action: str, response: dict[str, Any]) -> None:
-        if action == "connect":
-            if response.get("type") == "ERROR":
-                self.status_var.set(response.get("message", "No se pudo conectar."))
-                self.connect_button.configure(state="normal")
-                return
-            self._build_chat()
-            return
-
-        if action == "send":
-            self._sending = False
-            self.send_button.configure(
-                state="normal" if self.selected_room in self.joined_rooms else "disabled"
-            )
-            if response.get("type") == "SUCCESS":
-                self.composer.delete("1.0", tk.END)
-                self.status_var.set("Mensaje enviado.")
-            else:
-                self.status_var.set(response.get("message", "No se pudo enviar el mensaje."))
-            return
-
+            raise ConnectionError("No hay conexión activa con el servidor")
+        response = await self.client.request(new_request(message_type, **fields))
         if response.get("type") == "ERROR":
-            self.status_var.set(response.get("message", "La operación no se pudo completar."))
-            return
+            self._notify(response.get("message", "La operación no se pudo completar."))
+        return response
 
-        data = response.get("data", {})
-        if action == "rooms":
-            rooms = data.get("rooms", [])
+    async def _refresh_rooms(self, _event: Any = None) -> None:
+        try:
+            response = await self._request("LIST_ROOMS")
+            if response.get("type") != "SUCCESS":
+                return
+            rooms = response.get("data", {}).get("rooms", [])
             self.room_names = [item["room"] for item in rooms]
-            self.room_owners = {
-                item["room"]: item["created_by"]
-                for item in rooms
-            }
-            self.room_list.delete(0, tk.END)
-            for item in rooms:
-                room = item["room"]
-                membership = " (unido)" if room in self.joined_rooms else ""
-                self.room_list.insert(
-                    tk.END,
-                    f"# {room}  ·  {item['members_count']} integrantes{membership}",
-                )
-            if self.selected_room in self.room_names:
-                index = self.room_names.index(self.selected_room)
-                self.room_list.selection_set(index)
-                self.room_list.activate(index)
-                self._select_room()
-            elif self.room_names:
-                self.room_list.selection_set(0)
-                self.room_list.activate(0)
-                self._select_room()
-            self.status_var.set(f"Salas actualizadas ({len(rooms)}).")
-        elif action == "create":
-            room = data.get("room")
-            if room:
-                self.joined_rooms.add(room)
-                self.selected_room = room
-                self.status_var.set(f"Sala #{room} creada; ya formas parte de ella.")
-                self._refresh_rooms()
-                self._load_history(room)
-        elif action == "join":
-            room = data.get("room")
-            if room:
-                self.joined_rooms.add(room)
-                self.selected_room = room
-                self.status_var.set(f"Te uniste a #{room}.")
-                self._refresh_rooms()
-                self._load_history(room)
-            self._select_room_by_name(room)
-        elif action == "leave":
-            room = data.get("room")
-            if room:
-                self.joined_rooms.discard(room)
-                self.status_var.set(f"Saliste de #{room}.")
-                if self.selected_room == room:
-                    self._select_room_by_name(room)
-                self._refresh_rooms()
-        elif action == "delete":
-            room = data.get("room")
-            if room:
-                self._remove_deleted_room(room)
-                self.status_var.set(f"Sala #{room} y su historial eliminados.")
-        elif action == "history":
-            room = response.get("room")
-            if room:
-                for message in response.get("messages", []):
-                    self._store_message(message)
-                if self.selected_room == room:
-                    self._render_messages(room)
-                notice = " El historial fue limitado por el tamaño del protocolo." if response.get(
-                    "truncated"
-                ) else ""
-                self.status_var.set(f"Historial de #{room} cargado.{notice}")
-        elif action == "members":
-            users = data.get("users", [])
-            room = self.selected_room or ""
-            self.members_var.set(f"Integrantes de #{room}: {', '.join(users) or 'ninguno'}")
+            self.room_counts = {item["room"]: item["members_count"] for item in rooms}
+            self.room_owners = {item["room"]: item["created_by"] for item in rooms}
+            self._render_rooms()
+            if self.selected_room not in self.room_names:
+                self.selected_room = None
+                self.room_title.value = "Elige una sala"
+                self.room_subtitle.value = ""
+                self.message_field.disabled = True
+                self.send_button.disabled = True
+                self.leave_button.visible = False
+                self.delete_button.visible = False
+                self.members = []
+                self._render_members()
+                self.message_list.controls = []
+                self.message_list.update()
+            if self.selected_room:
+                await self._refresh_members()
+        except (OSError, ConnectionError, asyncio.TimeoutError) as error:
+            self._notify(f"No se pudieron actualizar las salas: {error}")
 
-    def _select_room_by_name(self, room: str | None) -> None:
-        if room is None or room not in self.room_names:
-            self._update_room_actions()
+    async def _create_room(self, _event: Any = None) -> None:
+        room = (self.room_name_field.value or "").strip().lower()
+        if not room:
+            self._notify("Escribe el nombre de la sala que quieres crear.")
             return
-        index = self.room_names.index(room)
-        self.room_list.selection_clear(0, tk.END)
-        self.room_list.selection_set(index)
-        self.room_list.activate(index)
-        self._select_room()
+        try:
+            response = await self._request("CREATE_ROOM", room=room)
+            if response.get("type") == "SUCCESS":
+                self.room_name_field.value = ""
+                self.create_room_form.visible = False
+                self.room_name_field.visible = False
+                self.create_room_toggle.icon = ft.Icons.ADD
+                self.joined_rooms.add(room)
+                self.selected_room = room
+                await self._refresh_rooms()
+                await self._load_history(room)
+        except (OSError, ConnectionError, asyncio.TimeoutError) as error:
+            self._notify(f"No se pudo crear la sala: {error}")
 
-    def _load_history(self, room: str) -> None:
-        self._submit(self._request("HISTORY", room=room), "history")
-        self._update_room_actions()
-        self._select_room_by_name(room)
+    def _toggle_create_room(self, _event: Any = None) -> None:
+        visible = not self.create_room_form.visible
+        self.create_room_form.visible = visible
+        self.room_name_field.visible = visible
+        self.create_room_toggle.icon = ft.Icons.CLOSE if visible else ft.Icons.ADD
+        self.page.update()
 
-    def _store_message(self, message: dict[str, str]) -> None:
-        room = message["room"]
-        key = (message["timestamp"], message["username"], message["content"])
-        self.messages.setdefault(room, {})[key] = message
+    async def _select_room(self, room: str) -> None:
+        self.selected_room = room
+        self.room_title.value = room
+        is_joined = room in self.joined_rooms
+        self.room_subtitle.value = "Canal de texto · Ya formas parte de esta sala" if is_joined else "Canal de texto · Únete para conversar"
+        self.message_field.disabled = not is_joined
+        self.send_button.disabled = not is_joined
+        self.leave_button.visible = is_joined
+        self.delete_button.visible = self.room_owners.get(room) == self.username
+        self._render_rooms()
+        if is_joined:
+            self._render_messages(room)
+            await self._load_history(room)
+            await self._refresh_members()
+        else:
+            self.members = []
+            self._render_members()
+            self.message_list.controls = [
+                ft.Container(
+                    expand=True,
+                    alignment=ft.Alignment.CENTER,
+                    content=ft.Column(
+                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                        controls=[
+                            ft.Icon(ft.Icons.LOCK_OUTLINE, size=40, color=MUTED),
+                            ft.Text(f"Únete a #{room} para participar", size=17, weight=ft.FontWeight.BOLD),
+                            ft.Button("Unirse a la sala", icon=ft.Icons.LOGIN, on_click=self._join_room, bgcolor=ACCENT),
+                        ],
+                    ),
+                )
+            ]
+            self.message_list.update()
+        self.page.update()
 
-    def _remove_deleted_room(self, room: str) -> None:
-        self.joined_rooms.discard(room)
-        self.messages.pop(room, None)
-        self.room_owners.pop(room, None)
-        if self.selected_room == room:
-            self.selected_room = None
-            self.room_title.set("Selecciona una sala")
-            self.members_var.set("")
-            self._show_chat_text(f"La sala #{room} fue eliminada.")
-        self._update_room_actions()
-        self._refresh_rooms()
+    async def _delete_selected_room(self, _event: Any = None) -> None:
+        room = self.selected_room
+        if room and self.room_owners.get(room) == self.username:
+            self._confirm_delete(room)
 
-    def _handle_server_event(self, event: dict[str, Any]) -> None:
-        event_type = event.get("type")
-        if event_type == "CHAT_MESSAGE":
-            self._store_message(event)
-            room = event["room"]
+    async def _join_room(self, _event: Any = None) -> None:
+        room = self.selected_room
+        if not room:
+            self._notify("Selecciona una sala primero.")
+            return
+        try:
+            response = await self._request("JOIN_ROOM", room=room)
+            if response.get("type") == "SUCCESS":
+                self.joined_rooms.add(room)
+                await self._select_room(room)
+                await self._refresh_rooms()
+        except (OSError, ConnectionError, asyncio.TimeoutError) as error:
+            self._notify(f"No se pudo entrar a la sala: {error}")
+
+    async def _leave_room(self, _event: Any = None) -> None:
+        room = self.selected_room
+        if not room or room not in self.joined_rooms:
+            self._notify("Selecciona una sala a la que ya te hayas unido.")
+            return
+        response = await self._request("LEAVE_ROOM", room=room)
+        if response.get("type") == "SUCCESS":
+            self.joined_rooms.discard(room)
+            await self._select_room(room)
+            await self._refresh_rooms()
+
+    async def _delete_room(self, room: str) -> None:
+        response = await self._request("DELETE_ROOM", room=room)
+        if response.get("type") == "SUCCESS":
+            self.joined_rooms.discard(room)
+            self.messages.pop(room, None)
+            if self.selected_room == room:
+                self.selected_room = None
+            await self._refresh_rooms()
+            self._notify(f"Sala #{room} y su historial eliminados.")
+
+    def _confirm_delete(self, room: str) -> None:
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Eliminar sala"),
+            content=ft.Text(f"¿Eliminar #{room}, su historial y retirar a todos sus integrantes?"),
+            actions=[
+                ft.TextButton("Cancelar", on_click=lambda _e: self.page.pop_dialog()),
+                ft.TextButton(
+                    "Eliminar",
+                    on_click=lambda _e: self._confirm_delete_action(room),
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        self.page.show_dialog(dialog)
+
+    async def _confirm_delete_action(self, room: str) -> None:
+        self.page.pop_dialog()
+        await self._delete_room(room)
+
+    async def _load_history(self, room: str) -> None:
+        try:
+            response = await self._request("HISTORY", room=room)
+            if response.get("type") != "HISTORY_RESULT":
+                return
+            for message in response.get("messages", []):
+                self._store_message(message)
             if self.selected_room == room:
                 self._render_messages(room)
-                self.status_var.set(f"Nuevo mensaje en #{room}.")
-            else:
-                self.status_var.set(f"Nuevo mensaje en #{room}.")
-        elif event_type in {"ROOM_CREATED", "USER_JOINED", "USER_LEFT"}:
-            room = event.get("room", "")
-            self._refresh_rooms()
-            if event_type == "ROOM_CREATED":
-                self.status_var.set(f"{event.get('created_by', 'Un usuario')} creó #{room}.")
-            elif event_type == "USER_JOINED":
-                self.status_var.set(f"{event.get('username', 'Un usuario')} se unió a #{room}.")
-            else:
-                self.status_var.set(f"{event.get('username', 'Un usuario')} salió de #{room}.")
-        elif event_type == "ROOM_DELETED":
-            room = event.get("room", "")
-            self._remove_deleted_room(room)
-            self.status_var.set(f"{event.get('deleted_by', 'Un usuario')} eliminó #{room}.")
-        elif event_type == "USER_CONNECTED":
-            self.status_var.set(f"{event.get('username', 'Un usuario')} se conectó.")
-        elif event_type == "USER_DISCONNECTED":
-            self.status_var.set(f"{event.get('username', 'Un usuario')} se desconectó.")
+            if response.get("truncated"):
+                self._notify("El historial se limitó por el tamaño máximo del protocolo.")
+        except (OSError, ConnectionError, asyncio.TimeoutError) as error:
+            self._notify(f"No se pudo cargar el historial: {error}")
 
-    def _handle_error(self, action: str, error: str) -> None:
-        if action == "connect":
-            self.connect_button.configure(state="normal")
-        if action == "send":
+    async def _load_members(self, _event: Any = None) -> None:
+        await self._refresh_members()
+
+    async def _refresh_members(self) -> None:
+        room = self.selected_room
+        if not room or room not in self.joined_rooms:
+            return
+        try:
+            response = await self._request("LIST_USERS", room=room)
+            if response.get("type") == "SUCCESS":
+                self.members = response.get("data", {}).get("users", [])
+                self._render_members()
+        except (OSError, ConnectionError, asyncio.TimeoutError) as error:
+            self._notify(f"No se pudieron consultar integrantes: {error}")
+
+    async def _send_message(self, _event: Any = None) -> None:
+        room = self.selected_room
+        content = (self.message_field.value or "").strip()
+        if not room or room not in self.joined_rooms:
+            self._notify("Únete a una sala antes de enviar mensajes.")
+            return
+        if not content or self._sending:
+            return
+        self._sending = True
+        self.send_button.disabled = True
+        self.page.update()
+        try:
+            response = await self._request("SEND_MESSAGE", room=room, content=content)
+            if response.get("type") == "SUCCESS":
+                self.message_field.value = ""
+        except (OSError, ConnectionError, asyncio.TimeoutError) as error:
+            self._notify(f"No se pudo enviar el mensaje: {error}")
+        finally:
             self._sending = False
-            self._update_room_actions()
-        self.status_var.set(f"No se pudo completar la operación: {error}")
+            self.send_button.disabled = room not in self.joined_rooms
+            self.page.update()
 
-    def _on_close(self) -> None:
+    async def _listen_events(self, client: TcpClient) -> None:
+        try:
+            while not self._closing:
+                events = [await client.events.get()]
+                # Batch bursts so Flet updates the message list a few times,
+                # instead of rebuilding and sending the page for every frame.
+                await asyncio.sleep(0.005)
+                for _ in range(63):
+                    try:
+                        events.append(client.events.get_nowait())
+                    except asyncio.QueueEmpty:
+                        break
+
+                message_controls: list[ft.Control] = []
+                refresh_rooms = False
+                refresh_members = False
+                page_changed = False
+                for event in events:
+                    event_type = event.get("type")
+                    if event_type == "CHAT_MESSAGE":
+                        room = event.get("room")
+                        key = (
+                            event.get("timestamp", ""),
+                            event.get("username", ""),
+                            event.get("content", ""),
+                        )
+                        is_new = room not in self.messages or key not in self.messages[room]
+                        was_empty = not self.messages.get(room)
+                        self._store_message(event)
+                        if is_new and self.selected_room == room:
+                            if was_empty:
+                                self.message_list.controls.clear()
+                            message_controls.append(self._message_card(event))
+                    elif event_type in {"ROOM_CREATED", "ROOM_DELETED"}:
+                        if event_type == "ROOM_DELETED":
+                            room = event.get("room")
+                            self.joined_rooms.discard(room)
+                            self.messages.pop(room, None)
+                            if self.selected_room == room:
+                                self.selected_room = None
+                        refresh_rooms = True
+                    elif event_type in {"USER_JOINED", "USER_LEFT"}:
+                        refresh_rooms = True
+                        refresh_members |= event.get("room") == self.selected_room
+                    elif event_type in {"USER_CONNECTED", "USER_DISCONNECTED"}:
+                        verb = "se conectó" if event_type == "USER_CONNECTED" else "se desconectó"
+                        self._notify(f"{event.get('username', 'Un usuario')} {verb}.")
+                        page_changed = True
+
+                if refresh_rooms:
+                    await self._refresh_rooms()
+                if refresh_members and not refresh_rooms:
+                    await self._refresh_members()
+                if message_controls:
+                    self.message_list.controls.extend(message_controls)
+                    self.message_list.update()
+                if page_changed:
+                    self.page.update()
+        except asyncio.CancelledError:
+            raise
+        except (ConnectionError, OSError):
+            if not self._closing:
+                self._notify("Se perdió la conexión con el servidor.")
+
+    def _store_message(self, message: dict[str, Any]) -> None:
+        room = message.get("room")
+        if not room:
+            return
+        key = (message.get("timestamp", ""), message.get("username", ""), message.get("content", ""))
+        self.messages.setdefault(room, {})[key] = message
+
+    def _notify(self, message: str) -> None:
+        if self._closing:
+            return
+        self.page.show_dialog(
+            ft.SnackBar(content=ft.Text(message), duration=3500)
+        )
+
+    async def _close_session(self) -> None:
         if self._closing:
             return
         self._closing = True
-        if self.client is None:
-            self.loop.call_soon_threadsafe(self.loop.stop)
-            self.root.destroy()
-            return
-
-        async def shutdown() -> None:
-            if self.client is not None:
-                await self.client.close()
-                self.client = None
-            current = asyncio.current_task()
-            pending = [
-                task for task in asyncio.all_tasks()
-                if task is not current
-            ]
-            for task in pending:
-                task.cancel()
-            if pending:
-                await asyncio.gather(*pending, return_exceptions=True)
-
-        future = asyncio.run_coroutine_threadsafe(shutdown(), self.loop)
-
-        def finished(result: Future[None]) -> None:
+        if self._event_task is not None:
+            self._event_task.cancel()
+            await asyncio.gather(self._event_task, return_exceptions=True)
+        if self.client is not None:
             try:
-                result.result()
-            except Exception as error:
-                self.ui_events.put(("error", "shutdown", str(error)))
-            self.loop.call_soon_threadsafe(self.loop.stop)
-            self.ui_events.put(("closed", "", None))
+                await self.client.request(new_request("DISCONNECT"))
+            except (OSError, ConnectionError, asyncio.TimeoutError):
+                pass
+            await self.client.close()
+            self.client = None
+        self.username = ""
+        self.selected_room = None
+        self.joined_rooms.clear()
+        self.room_names.clear()
+        self.room_owners.clear()
+        self.messages.clear()
+        self.members.clear()
 
-        future.add_done_callback(finished)
+    async def _logout_session(self, _event: Any = None) -> None:
+        await self._close_session()
+        self._closing = False
+        self._build_login()
+
+    async def _quit_app(self, _event: Any = None) -> None:
+        await self._close_session()
+        self._closing = True
+        await self.page.window.destroy()
+
+    async def _on_disconnect(self, _event: Any) -> None:
+        self._closing = True
+        if self._event_task is not None:
+            self._event_task.cancel()
+            await asyncio.gather(self._event_task, return_exceptions=True)
+        if self.client is not None:
+            await self.client.close()
+            self.client = None
+
+    async def _on_window_event(self, event: ft.WindowEvent) -> None:
+        if event.type == ft.WindowEventType.CLOSE:
+            await self._quit_app()
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Interfaz accesible de ChatRoom")
+    parser = argparse.ArgumentParser(description="Interfaz Flet de ChatRoom")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
-    root = tk.Tk()
-    ChatRoomApp(root, args.host, args.port)
-    root.mainloop()
+
+    async def app(page: ft.Page) -> None:
+        ChatRoomApp(page, args.host, args.port)
+
+    ft.run(app, assets_dir=str(ASSETS_DIR))
 
 
 if __name__ == "__main__":

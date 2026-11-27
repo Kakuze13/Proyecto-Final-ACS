@@ -153,13 +153,21 @@ async def run_demo(host: str, port: int, room: str, message_count: int) -> None:
             f"Enviando {message_count} mensajes de 2 000 caracteres a #{room}. "
             "La interfaz gráfica debería mostrarlos en tiempo real."
         )
-        for index in range(1, message_count + 1):
-            label = f"{marker} {index:03}/{message_count:03} "
-            content = label + ("x" * (MESSAGE_LENGTH - len(label)))
-            response = await sender.request(
-                _request("SEND_MESSAGE", room=room, content=content)
-            )
-            _require_success(response, f"enviar el mensaje {index}")
+        batch_size = 20
+        for start in range(1, message_count + 1, batch_size):
+            indexes = range(start, min(start + batch_size, message_count + 1))
+
+            async def send_one(index: int) -> dict[str, Any]:
+                label = f"{marker} {index:03}/{message_count:03} "
+                content = label + ("x" * (MESSAGE_LENGTH - len(label)))
+                return await sender.request(
+                    _request("SEND_MESSAGE", room=room, content=content)
+                )
+
+            responses = await asyncio.gather(*(send_one(index) for index in indexes))
+            for index, response in zip(indexes, responses):
+                _require_success(response, f"enviar el mensaje {index}")
+            print(f"Enviados {min(start + batch_size - 1, message_count)}/{message_count}.")
 
         received = await _collect_messages(healthy, marker, message_count)
         if received != message_count:

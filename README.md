@@ -45,12 +45,21 @@ También se puede usar la interfaz gráfica de escritorio:
 python -m client.gui --host 127.0.0.1 --port 8765
 ```
 
+La interfaz está hecha con Flet y requiere la dependencia `flet[desktop]`, que
+se instala junto con el resto del proyecto mediante
+`python -m pip install -r requirements.txt`.
+El icono de ventana de Windows se carga desde `assets/icon.ico`.
+
 La interfaz permite crear salas, unirse, consultar integrantes e intercambiar
-mensajes en tiempo real. Los controles se pueden recorrer con `Tab` y las
-salas con las flechas del teclado. En el chat, `Ctrl+Enter` envía el mensaje,
-`Ctrl+L` enfoca el cuadro de escritura y `Ctrl+R` actualiza las salas. Los
-botones `A−` y `A+` ajustan el tamaño del texto. Los nombres de sala se
-normalizan a minúsculas y admiten letras, números, `_` y `-`.
+mensajes en tiempo real. Las salas se muestran en una barra lateral oscura y
+el chat incluye historial, estado de conexión y lista de integrantes. Para
+enviar, pulsa el botón de envío o Enter; Shift+Enter agrega una línea. Los
+nombres de sala se normalizan a minúsculas y admiten letras, números, `_` y `-`.
+El botón `+` despliega el formulario de creación. El icono rojo del perfil cierra
+la sesión y vuelve al inicio; el icono inferior de la barra izquierda cierra la
+aplicación. La ventana admite Snap Assist desde 540 × 360 píxeles; en anchos
+menores oculta la lista de integrantes y luego la barra de servidores para
+conservar espacio para el chat.
 
 El servidor crea la base local `chatroom.db`. Usa `Ctrl+C` para detenerlo; se
 cierran el listener, las sesiones y sus tareas. `127.0.0.1` solo permite
@@ -116,7 +125,7 @@ Para reproducir la saturación de forma determinista, detén el servidor normal
 con `Ctrl+C` y reinícialo con estos límites de demostración:
 
 ```powershell
-python -m server.main --host 127.0.0.1 --port 8765 --database chatroom.db --queue-size 1 --enqueue-timeout 0.01 --socket-send-buffer 1024
+python -m server.main --host 127.0.0.1 --port 8765 --database chatroom.db --queue-size 8 --enqueue-timeout 0.1
 ```
 
 Luego abre la GUI, inicia sesión y crea o únete a `demo_concurrencia`. Desde
@@ -134,3 +143,9 @@ y que el lento se desconecta por backpressure. Los mensajes con la marca
 esta demostración; sin ellos se aplican los valores normales. La prueba
 automatizada equivalente, con servidor aislado, está en
 `tests/integration/test_tcp_server.py`.
+
+La GUI agrega mensajes entrantes en pequeños lotes para no redibujar toda la
+conversación por cada evento. El comando de demostración conserva los búferes
+TCP normales para no someter también al emisor y al observador a la limitación
+de envío; el generador reduce el búfer de recepción únicamente en el cliente
+lento.
