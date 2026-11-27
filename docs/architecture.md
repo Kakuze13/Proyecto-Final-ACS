@@ -11,7 +11,7 @@ autenticación externa y despliegue en la nube.
 ## Casos de uso
 
 1. Conectar e identificarse con un nombre único.
-2. Consultar usuarios y salas, crear una sala y entrar/salir de ella.
+2. Consultar usuarios y salas, crear y eliminar salas, y entrar/salir de ellas.
 3. Enviar mensajes a una sala y consultar su historial.
 4. Recibir eventos de conexión, salas, membresía y mensajes.
 5. Desconectarse voluntariamente o recuperarse de una desconexión/error.
@@ -25,7 +25,7 @@ autenticación externa y despliegue en la nube.
 | `server.client_session` | Leer solicitudes, verificar estado de sesión y escribir su cola | Administrar el estado global |
 | `server.connection_manager` | Registrar usuarios/sesiones y retirar conexiones | Persistir mensajes |
 | `infrastructure.protocol` | Codificar y validar tramas JSON-LF | Cambiar estado del chat |
-| `services.room_service` | Crear/listar salas y cambiar membresía | Escribir bytes al socket o ejecutar SQL |
+| `services.room_service` | Crear/listar/eliminar salas y cambiar membresía | Escribir bytes al socket o ejecutar SQL |
 | `services.chat_service` | Validar/envíar mensajes y coordinar historial | Abrir conexiones |
 | `services.event_manager` | Encolar eventos para los destinatarios | Aplicar reglas de negocio |
 | `repositories` | Leer/escribir SQLite | Decidir permisos o reglas del chat |
@@ -67,6 +67,12 @@ servicios y ejecutan el acceso bloqueante fuera del Event Loop. Los errores
 esperables de entrada producen `ERROR`; un frame inválido o excesivo cierra esa
 conexión. Los errores internos se registran en servidor, no se filtran al
 cliente, y la sesión afectada se cierra de forma controlada.
+
+Eliminar una sala requiere que el nombre de usuario de la sesión coincida con
+`created_by`. La sala y su historial se borran en una transacción SQLite; el
+servicio retira el estado y membresías de memoria y publica `ROOM_DELETED` a
+todos los usuarios conectados. El MVP no implementa autenticación de cuentas,
+por lo que este permiso no verifica una identidad fuera de la sesión actual.
 
 ## Patrones y auditoría
 

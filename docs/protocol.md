@@ -33,6 +33,7 @@ de 1-64 caracteres; se devuelve en `SUCCESS` o `ERROR`. No se acepta
 | `CONNECT` | `username` | Primera solicitud |
 | `DISCONNECT` | ninguno | Sesión identificada |
 | `CREATE_ROOM` | `room` | Identificada; el nombre no existe |
+| `DELETE_ROOM` | `room` | Identificada; solo quien creó la sala |
 | `LIST_ROOMS` | ninguno | Identificada |
 | `JOIN_ROOM` | `room` | Sala existente; no miembro todavía |
 | `LEAVE_ROOM` | `room` | Miembro de la sala |
@@ -40,8 +41,10 @@ de 1-64 caracteres; se devuelve en `SUCCESS` o `ERROR`. No se acepta
 | `SEND_MESSAGE` | `room`, `content` | Miembro de la sala |
 | `HISTORY` | `room`, `limit` opcional | Miembro de la sala |
 
-`CREATE_ROOM` crea una sala persistente y une a su creador. No se eliminan salas
-vacías. La lista de salas incluye identificador y número actual de miembros.
+`CREATE_ROOM` crea una sala persistente y une a su creador. La lista de salas
+incluye identificador, creador y número actual de miembros. `DELETE_ROOM` solo
+permite al creador eliminar la sala; elimina su historial de mensajes en la
+misma transacción y retira a todos sus integrantes activos.
 `HISTORY` devuelve los últimos N mensajes de una sala, en orden cronológico.
 Si el frame resultante excede el límite de protocolo, el servidor omite los
 mensajes más antiguos hasta que la respuesta quepa e indica `"truncated": true`
@@ -71,6 +74,7 @@ malformada. Errores internos no incluyen trazas ni datos privados.
 | `USER_CONNECTED` | `username` | Todos los usuarios identificados |
 | `USER_DISCONNECTED` | `username` | Todos los demás usuarios identificados |
 | `ROOM_CREATED` | `room`, `created_by` | Todos los usuarios identificados |
+| `ROOM_DELETED` | `room`, `deleted_by` | Todos los usuarios identificados |
 | `USER_JOINED` | `room`, `username` | Miembros de la sala después del ingreso, incluido el usuario |
 | `USER_LEFT` | `room`, `username` | Miembros restantes de la sala; el usuario recibe `SUCCESS` |
 | `CHAT_MESSAGE` | `room`, `username`, `content`, `timestamp` | Miembros actuales, incluido el remitente |
@@ -83,7 +87,7 @@ Los eventos no asociados a solicitud omiten `request_id`.
 
 `INVALID_REQUEST`, `INVALID_USERNAME`, `USERNAME_TAKEN`, `NOT_CONNECTED`,
 `ALREADY_CONNECTED`, `INVALID_ROOM`, `ROOM_EXISTS`, `ROOM_NOT_FOUND`,
-`ALREADY_IN_ROOM`, `NOT_IN_ROOM`, `INVALID_CONTENT`, `MESSAGE_TOO_LARGE`,
+`NOT_ROOM_OWNER`, `ALREADY_IN_ROOM`, `NOT_IN_ROOM`, `INVALID_CONTENT`, `MESSAGE_TOO_LARGE`,
 `UNSUPPORTED_TYPE`, `INTERNAL_ERROR`, `SERVER_BUSY`.
 
 Una conexión saturada o con timeout se cierra; no se espera indefinidamente por

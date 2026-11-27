@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from client.demo_concurrency import run_demo
 from client.tcp_client import TcpClient
 from server.socket_server import SocketServer
 
@@ -224,6 +225,88 @@ def test_rooms_keep_membership_isolated_and_clean_up_disconnected_users(tmp_path
         finally:
             alice_writer.close()
             await alice_writer.wait_closed()
+            await server.close()
+
+    asyncio.run(scenario())
+
+
+def test_only_room_creator_can_delete_room_and_history(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        server = create_test_server(tmp_path)
+        await server.start()
+        port = server.sockets[0].getsockname()[1]
+        (alice_reader, alice_writer), (bob_reader, bob_writer) = await asyncio.gather(
+            asyncio.open_connection("127.0.0.1", port),
+            asyncio.open_connection("127.0.0.1", port),
+        )
+        try:
+            await send_request(
+                alice_writer,
+                alice_reader,
+                {"type": "CONNECT", "request_id": "c1", "username": "Alice"},
+            )
+            await send_request(
+                bob_writer,
+                bob_reader,
+                {"type": "CONNECT", "request_id": "c2", "username": "Bob"},
+            )
+            await send_request(
+                alice_writer,
+                alice_reader,
+                {"type": "CREATE_ROOM", "request_id": "r1", "room": "general"},
+            )
+            await send_request(
+                bob_writer,
+                bob_reader,
+                {"type": "JOIN_ROOM", "request_id": "j1", "room": "general"},
+            )
+            await send_request(
+                alice_writer,
+                alice_reader,
+                {
+                    "type": "SEND_MESSAGE",
+                    "request_id": "m1",
+                    "room": "general",
+                    "content": "Se eliminará junto con la sala",
+                },
+            )
+
+            denied = await send_request(
+                bob_writer,
+                bob_reader,
+                {"type": "DELETE_ROOM", "request_id": "d1", "room": "general"},
+            )
+            assert denied["code"] == "NOT_ROOM_OWNER"
+
+            alice_writer.write(
+                b'{"type":"DELETE_ROOM","request_id":"d2","room":"general"}\n'
+            )
+            await alice_writer.drain()
+            alice_event, bob_event = await asyncio.gather(
+                read_event(alice_reader, "ROOM_DELETED"),
+                read_event(bob_reader, "ROOM_DELETED"),
+            )
+            deleted = await read_response(alice_reader, "d2")
+            assert deleted["type"] == "SUCCESS"
+            assert deleted["operation"] == "DELETE_ROOM"
+            assert alice_event == {
+                "type": "ROOM_DELETED",
+                "room": "general",
+                "deleted_by": "Alice",
+            }
+            assert bob_event == alice_event
+
+            rooms = await send_request(
+                alice_writer,
+                alice_reader,
+                {"type": "LIST_ROOMS", "request_id": "r2"},
+            )
+            assert rooms["data"]["rooms"] == []
+            assert await server._message_repository.history("general", 50) == []
+        finally:
+            alice_writer.close()
+            bob_writer.close()
+            await asyncio.gather(alice_writer.wait_closed(), bob_writer.wait_closed())
             await server.close()
 
     asyncio.run(scenario())
@@ -475,6 +558,38 @@ def test_saturated_client_is_closed_without_blocking_healthy_members(tmp_path: P
     asyncio.run(scenario())
 
 
+def test_concurrency_demo_verifies_slow_client_isolation(tmp_path: Path) -> None:
+    async def scenario() -> None:
+        server = create_test_server(
+            tmp_path,
+            queue_size=1,
+            enqueue_timeout=0.01,
+            socket_send_buffer=1_024,
+        )
+        await server.start()
+        port = server.sockets[0].getsockname()[1]
+        seed = TcpClient()
+        try:
+            await seed.connect("127.0.0.1", port)
+            connected = await seed.request(
+                {"type": "CONNECT", "request_id": "seed-connect", "username": "Seeder"}
+            )
+            assert connected["type"] == "SUCCESS"
+            created = await seed.request(
+                {"type": "CREATE_ROOM", "request_id": "seed-room", "room": "demo"}
+            )
+            assert created["type"] == "SUCCESS"
+
+            await run_demo("127.0.0.1", port, "demo", 200)
+        finally:
+            try:
+                await seed.close()
+            finally:
+                await server.close()
+
+    asyncio.run(scenario())
+
+
 def test_rooms_and_message_history_survive_server_restart(tmp_path: Path) -> None:
     async def scenario() -> None:
         server = create_test_server(tmp_path)
@@ -524,7 +639,9 @@ def test_rooms_and_message_history_survive_server_restart(tmp_path: Path) -> Non
                 new_reader,
                 {"type": "LIST_ROOMS", "request_id": "r2"},
             )
-            assert rooms["data"]["rooms"] == [{"room": "persisted", "members_count": 0}]
+            assert rooms["data"]["rooms"] == [
+                {"room": "persisted", "members_count": 0, "created_by": "Alice"}
+            ]
             await send_request(
                 new_writer,
                 new_reader,

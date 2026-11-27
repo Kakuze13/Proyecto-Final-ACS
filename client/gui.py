@@ -8,7 +8,7 @@ import tkinter as tk
 from collections.abc import Coroutine
 from datetime import datetime
 from tkinter import font as tkfont
-from tkinter import ttk
+from tkinter import messagebox, ttk
 from typing import Any
 from concurrent.futures import Future
 
@@ -34,6 +34,7 @@ class ChatRoomApp:
         self.selected_room: str | None = None
         self.joined_rooms: set[str] = set()
         self.room_names: list[str] = []
+        self.room_owners: dict[str, str] = {}
         self.messages: dict[str, dict[tuple[str, str, str], dict[str, str]]] = {}
         self.text_size = 12
         self._closing = False
@@ -231,6 +232,18 @@ class ChatRoomApp:
             text="Ver integrantes",
             command=self._list_members,
         ).grid(row=2, column=0, columnspan=2, sticky="ew", pady=3)
+        self.delete_room_button = ttk.Button(
+            room_actions,
+            text="Eliminar sala",
+            command=self._delete_room,
+        )
+        self.delete_room_button.grid(
+            row=3,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=3,
+        )
 
         conversation.columnconfigure(0, weight=1)
         conversation.rowconfigure(1, weight=1)
@@ -399,6 +412,19 @@ class ChatRoomApp:
             return
         self._submit(self._request("LEAVE_ROOM", room=room), "leave")
 
+    def _delete_room(self) -> None:
+        room = self._selected_room_name()
+        if room is None or self.room_owners.get(room) != self.username:
+            self.status_var.set("Solo quien creó la sala puede eliminarla.")
+            return
+        confirmed = messagebox.askyesno(
+            "Eliminar sala",
+            f"¿Eliminar #{room}, su historial y retirar a todos sus integrantes?",
+            parent=self.root,
+        )
+        if confirmed:
+            self._submit(self._request("DELETE_ROOM", room=room), "delete")
+
     def _refresh_rooms(self) -> None:
         if self.client is not None:
             self._submit(self._request("LIST_ROOMS"), "rooms")
@@ -452,6 +478,8 @@ class ChatRoomApp:
         joined = room is not None and room in self.joined_rooms
         self.join_button.configure(state="disabled" if joined or room is None else "normal")
         self.leave_button.configure(state="normal" if joined else "disabled")
+        is_owner = room is not None and self.room_owners.get(room) == self.username
+        self.delete_room_button.configure(state="normal" if is_owner else "disabled")
         self.composer.configure(state="normal" if joined else "disabled")
         self.send_button.configure(
             state="normal" if joined and not self._sending else "disabled"
@@ -538,6 +566,10 @@ class ChatRoomApp:
         if action == "rooms":
             rooms = data.get("rooms", [])
             self.room_names = [item["room"] for item in rooms]
+            self.room_owners = {
+                item["room"]: item["created_by"]
+                for item in rooms
+            }
             self.room_list.delete(0, tk.END)
             for item in rooms:
                 room = item["room"]
@@ -581,6 +613,11 @@ class ChatRoomApp:
                 if self.selected_room == room:
                     self._select_room_by_name(room)
                 self._refresh_rooms()
+        elif action == "delete":
+            room = data.get("room")
+            if room:
+                self._remove_deleted_room(room)
+                self.status_var.set(f"Sala #{room} y su historial eliminados.")
         elif action == "history":
             room = response.get("room")
             if room:
@@ -617,6 +654,18 @@ class ChatRoomApp:
         key = (message["timestamp"], message["username"], message["content"])
         self.messages.setdefault(room, {})[key] = message
 
+    def _remove_deleted_room(self, room: str) -> None:
+        self.joined_rooms.discard(room)
+        self.messages.pop(room, None)
+        self.room_owners.pop(room, None)
+        if self.selected_room == room:
+            self.selected_room = None
+            self.room_title.set("Selecciona una sala")
+            self.members_var.set("")
+            self._show_chat_text(f"La sala #{room} fue eliminada.")
+        self._update_room_actions()
+        self._refresh_rooms()
+
     def _handle_server_event(self, event: dict[str, Any]) -> None:
         event_type = event.get("type")
         if event_type == "CHAT_MESSAGE":
@@ -636,6 +685,10 @@ class ChatRoomApp:
                 self.status_var.set(f"{event.get('username', 'Un usuario')} se unió a #{room}.")
             else:
                 self.status_var.set(f"{event.get('username', 'Un usuario')} salió de #{room}.")
+        elif event_type == "ROOM_DELETED":
+            room = event.get("room", "")
+            self._remove_deleted_room(room)
+            self.status_var.set(f"{event.get('deleted_by', 'Un usuario')} eliminó #{room}.")
         elif event_type == "USER_CONNECTED":
             self.status_var.set(f"{event.get('username', 'Un usuario')} se conectó.")
         elif event_type == "USER_DISCONNECTED":

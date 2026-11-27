@@ -26,6 +26,7 @@ class SocketServer:
         queue_size: int = 100,
         enqueue_timeout: float = 0.1,
         read_timeout: float = 300,
+        socket_send_buffer: int | None = None,
     ) -> None:
         if max_connections < 1:
             raise ValueError("max_connections debe ser positivo")
@@ -35,6 +36,8 @@ class SocketServer:
             raise ValueError("enqueue_timeout debe ser positivo")
         if read_timeout <= 0:
             raise ValueError("read_timeout debe ser positivo")
+        if socket_send_buffer is not None and socket_send_buffer < 1:
+            raise ValueError("socket_send_buffer debe ser positivo")
         self.host = host
         self.port = port
         self._database = Database(database_path)
@@ -44,6 +47,7 @@ class SocketServer:
         self.queue_size = queue_size
         self.enqueue_timeout = enqueue_timeout
         self.read_timeout = read_timeout
+        self.socket_send_buffer = socket_send_buffer
         self._server: asyncio.Server | None = None
         self._writers: set[asyncio.StreamWriter] = set()
         self._client_tasks: set[asyncio.Task[None]] = set()
@@ -124,6 +128,15 @@ class SocketServer:
         self._writers.add(writer)
         logger.info("Cliente TCP conectado: %s", peer)
         try:
+            if self.socket_send_buffer is not None:
+                client_socket = writer.get_extra_info("socket")
+                if client_socket is None:
+                    raise RuntimeError("No se pudo acceder al socket TCP del cliente")
+                client_socket.setsockopt(
+                    socket.SOL_SOCKET,
+                    socket.SO_SNDBUF,
+                    self.socket_send_buffer,
+                )
             session = ClientSession(
                 reader,
                 writer,

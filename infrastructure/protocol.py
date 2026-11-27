@@ -8,6 +8,7 @@ REQUEST_FIELDS: dict[str, set[str]] = {
     "CONNECT": {"username"},
     "DISCONNECT": set(),
     "CREATE_ROOM": {"room"},
+    "DELETE_ROOM": {"room"},
     "LIST_ROOMS": set(),
     "JOIN_ROOM": {"room"},
     "LEAVE_ROOM": {"room"},

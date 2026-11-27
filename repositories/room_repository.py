@@ -31,6 +31,13 @@ class RoomRepository:
     async def list_all(self) -> list[dict[str, str]]:
         return await self.database.run(self._list_all_sync)
 
+    async def delete(self, name: str) -> None:
+        try:
+            await self.database.run(self._delete_sync, name)
+        except sqlite3.Error as error:
+            logger.exception("No se pudo eliminar la sala %s", name)
+            raise ChatError("INTERNAL_ERROR", "No se pudo eliminar la sala") from error
+
     def _save_sync(self, name: str, created_by: str, created_at: str) -> None:
         with closing(self.database.connect()) as connection:
             with connection:
@@ -45,3 +52,18 @@ class RoomRepository:
                 "SELECT name, created_by, created_at FROM rooms ORDER BY name"
             ).fetchall()
             return [dict(row) for row in rows]
+
+    def _delete_sync(self, name: str) -> None:
+        with closing(self.database.connect()) as connection:
+            with connection:
+                exists = connection.execute(
+                    "SELECT 1 FROM rooms WHERE name = ?",
+                    (name,),
+                ).fetchone()
+                if exists is None:
+                    raise ChatError("ROOM_NOT_FOUND", "La sala no existe")
+                connection.execute(
+                    "DELETE FROM messages WHERE room_name = ?",
+                    (name,),
+                )
+                connection.execute("DELETE FROM rooms WHERE name = ?", (name,))

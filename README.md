@@ -64,6 +64,7 @@ Después de identificarse:
 ```text
 /rooms
 /create general
+/delete general
 /users
 /say general Hola a todos
 /history general 50
@@ -72,7 +73,11 @@ Después de identificarse:
 ```
 
 Las salas creadas se conservan tras reiniciar. El creador entra automáticamente;
-las salas vacías permanecen. Otro cliente puede ejecutar `/join general` y
+las salas vacías permanecen hasta que su creador las elimina con `/delete`.
+Eliminar una sala borra también su historial y retira a todos sus integrantes;
+la GUI pide confirmación y solo habilita la acción para el creador. El permiso
+se basa en el nombre de usuario de la sesión, ya que el MVP no implementa
+autenticación de cuentas. Otro cliente puede ejecutar `/join general` y
 `/users general` para consultar sus integrantes. Solo los miembros pueden
 enviar mensajes o consultar el historial. El servidor asigna remitente y hora.
 
@@ -101,3 +106,28 @@ python -m pytest -q tests/integration/test_tcp_server.py -k concurrent_clients
 La prueba parametrizada ejecuta 5, 10, 20 y 50 clientes simultáneos. Comprueba
 conexión, ingreso a una sala y recepción de los mensajes enviados en paralelo.
 También se prueba un cliente lento y la persistencia tras reiniciar el servidor.
+
+## Demostración visible en la interfaz gráfica
+
+Para reproducir la saturación de forma determinista, detén el servidor normal
+con `Ctrl+C` y reinícialo con estos límites de demostración:
+
+```powershell
+python -m server.main --host 127.0.0.1 --port 8765 --database chatroom.db --queue-size 1 --enqueue-timeout 0.01 --socket-send-buffer 1024
+```
+
+Luego abre la GUI, inicia sesión y crea o únete a `demo_concurrencia`. Desde
+una tercera terminal, en esta carpeta, ejecuta:
+
+```powershell
+python -m client.demo_concurrency --room demo_concurrencia
+```
+
+Pulsa Enter cuando la GUI esté dentro de la sala. El generador conecta un
+emisor, un cliente saludable y un cliente lento que no consume mensajes; envía
+200 mensajes de 2 000 caracteres y comprueba que el saludable los recibe todos
+y que el lento se desconecta por backpressure. Los mensajes con la marca
+`DEMO-...` aparecerán en la sala de la GUI. Los límites reducidos son solo para
+esta demostración; sin ellos se aplican los valores normales. La prueba
+automatizada equivalente, con servidor aislado, está en
+`tests/integration/test_tcp_server.py`.

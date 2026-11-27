@@ -13,6 +13,7 @@ ROOM_PATTERN = re.compile(r"[a-z0-9_-]{1,32}\Z")
 class RoomService:
     def __init__(self, repository: RoomRepository | None = None) -> None:
         self._rooms: dict[str, Room] = {}
+        self._deleting: set[str] = set()
         self._lock = asyncio.Lock()
         self.repository = repository
 
@@ -47,14 +48,42 @@ class RoomService:
     async def list_rooms(self) -> list[dict[str, int | str]]:
         async with self._lock:
             return [
-                {"room": room.name, "members_count": len(room.members)}
+                {
+                    "room": room.name,
+                    "members_count": len(room.members),
+                    "created_by": room.created_by,
+                }
                 for room in sorted(self._rooms.values(), key=lambda item: item.name)
+                if room.name not in self._deleting
             ]
+
+    async def delete(self, name: str, username: str) -> None:
+        async with self._lock:
+            room = self._rooms.get(name)
+            if room is None or name in self._deleting:
+                raise ChatError("ROOM_NOT_FOUND", "La sala no existe")
+            if room.created_by != username:
+                raise ChatError(
+                    "NOT_ROOM_OWNER",
+                    "Solo quien creó la sala puede eliminarla",
+                )
+            self._deleting.add(name)
+
+        deleted = False
+        try:
+            if self.repository is not None:
+                await self.repository.delete(name)
+            deleted = True
+        finally:
+            async with self._lock:
+                if deleted:
+                    self._rooms.pop(name, None)
+                self._deleting.discard(name)
 
     async def join(self, name: str, username: str) -> None:
         async with self._lock:
             room = self._rooms.get(name)
-            if room is None:
+            if room is None or name in self._deleting:
                 raise ChatError("ROOM_NOT_FOUND", "La sala no existe")
             if username in room.members:
                 raise ChatError("ALREADY_IN_ROOM", "El usuario ya pertenece a la sala")
@@ -63,7 +92,7 @@ class RoomService:
     async def leave(self, name: str, username: str) -> None:
         async with self._lock:
             room = self._rooms.get(name)
-            if room is None:
+            if room is None or name in self._deleting:
                 raise ChatError("ROOM_NOT_FOUND", "La sala no existe")
             if username not in room.members:
                 raise ChatError("NOT_IN_ROOM", "El usuario no pertenece a la sala")
@@ -72,7 +101,7 @@ class RoomService:
     async def list_members(self, name: str) -> list[str]:
         async with self._lock:
             room = self._rooms.get(name)
-            if room is None:
+            if room is None or name in self._deleting:
                 raise ChatError("ROOM_NOT_FOUND", "La sala no existe")
             return sorted(room.members, key=str.casefold)
 

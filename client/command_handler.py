@@ -8,6 +8,7 @@ from client.tcp_client import TcpClient
 HELP_TEXT = """Comandos:
   /rooms                         listar salas
   /create <sala>                 crear sala (el creador entra automáticamente)
+  /delete <sala>                 eliminar sala creada por ti
   /join <sala>                   entrar en una sala
   /leave <sala>                  salir de una sala
   /users [sala]                  listar usuarios o integrantes de una sala
@@ -93,6 +94,8 @@ def _command_to_request(parts: list[str]) -> dict[str, Any] | None:
         return new_request("LIST_ROOMS")
     if command == "/create" and len(parts) == 2:
         return new_request("CREATE_ROOM", room=parts[1])
+    if command == "/delete" and len(parts) == 2:
+        return new_request("DELETE_ROOM", room=parts[1])
     if command == "/join" and len(parts) == 2:
         return new_request("JOIN_ROOM", room=parts[1])
     if command == "/leave" and len(parts) == 2:

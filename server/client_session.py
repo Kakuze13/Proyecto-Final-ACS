@@ -122,6 +122,22 @@ class ClientSession:
                 )
                 await self._send_success(request_id, "CREATE_ROOM", {"room": room.name})
                 return True
+            if message["type"] == "DELETE_ROOM":
+                room_name = message["room"]
+                await self.rooms.delete(room_name, current_user.username)
+                await self.events.publish_global(
+                    {
+                        "type": "ROOM_DELETED",
+                        "room": room_name,
+                        "deleted_by": current_user.username,
+                    }
+                )
+                await self._send_success(
+                    request_id,
+                    "DELETE_ROOM",
+                    {"room": room_name},
+                )
+                return True
             if message["type"] == "LIST_ROOMS":
                 rooms = await self.rooms.list_rooms()
                 await self._send_success(request_id, "LIST_ROOMS", {"rooms": rooms})

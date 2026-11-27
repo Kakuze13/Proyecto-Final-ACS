@@ -108,3 +108,23 @@ No se ejecutaron pruebas funcionales antes de iniciar la Fase 2.
   `main`; commit inicial `9cdb5453558bd9ecb3852c742341db16febad2f2` verificado.
 - Firewall y pruebas entre equipos requieren configuración externa y siguen
   pendientes; no son necesarios para loopback.
+
+## Demostración visible de concurrencia (2026-11-26)
+
+- Servidor de demostración: cola de salida de 1 evento, timeout de 10 ms y
+  `SO_SNDBUF` de 1 024 bytes para hacer reproducible la saturación.
+- `client.demo_concurrency` envía mensajes etiquetados a una sala existente,
+  comprueba que un cliente saludable recibe todos y espera el cierre del cliente
+  lento. La GUI, unida a la misma sala, muestra los mensajes en tiempo real.
+- Prueba automatizada: `test_concurrency_demo_verifies_slow_client_isolation`;
+  la suite completa pasó con 28 pruebas.
+
+## Eliminación de salas (2026-11-26)
+
+- `DELETE_ROOM` permite borrar solo al creador; una transacción elimina la sala
+  y todos sus mensajes, retira las membresías y publica `ROOM_DELETED`.
+- La GUI confirma la acción, la limita al creador y actualiza salas e historial;
+  la consola ofrece `/delete <sala>`.
+- Pruebas: usuario no creador rechazado, notificación a los integrantes,
+  eliminación del historial y comando de consola.
+- Suite completa: `python -m pytest -q` — 31 pruebas aprobadas.

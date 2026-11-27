@@ -36,5 +36,10 @@ class EventManager:
             return_exceptions=True,
         )
         for result in results:
-            if isinstance(result, Exception):
+            if isinstance(result, ConnectionError):
+                logger.debug(
+                    "Cliente desconectado durante la distribución de %s",
+                    event.get("type"),
+                )
+            elif isinstance(result, Exception):
                 logger.warning("No se pudo distribuir %s: %s", event.get("type"), result)

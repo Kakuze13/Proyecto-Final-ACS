@@ -72,3 +72,13 @@
 - Motivo: preservar el framing TCP JSON-LF sin ampliar el límite global.
 - Consecuencia: el cliente puede mostrar el subconjunto más reciente y avisar
   que el resultado fue truncado.
+
+## ADR-010: eliminación de salas
+
+- Estado: implementado.
+- Decisión: solo el creador puede eliminar una sala; se borran sus mensajes y
+  se retira a todos sus integrantes.
+- Motivo: mantener la propiedad explícita y evitar registros huérfanos en SQLite.
+- Consecuencia: la eliminación es transaccional, se anuncia globalmente y la
+  GUI actualiza su lista y estado de membresía. La autorización se basa en el
+  nombre de usuario de sesión; no sustituye autenticación de cuentas.
